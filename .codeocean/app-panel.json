@@ -1,0 +1,53 @@
+{
+	"version": 1,
+	"named_parameters": true,
+	"parameters": [
+		{
+			"id": "wfs3OTTQ0d4GHkeG",
+			"name": "session_id",
+			"param_name": "session_id",
+			"type": "text",
+			"value_type": "string"
+		},
+		{
+			"id": "nj1hT8RYS8GpGv6y",
+			"name": "regenerate",
+			"param_name": "regenerate",
+			"type": "text",
+			"value_type": "integer",
+			"default_value": "0"
+		},
+		{
+			"id": "GFIRrBpP2YQTAe5m",
+			"name": "zarr",
+			"param_name": "zarr",
+			"type": "text",
+			"value_type": "integer",
+			"default_value": "0"
+		},
+		{
+			"id": "LpVMfc3I4pNpmDYH",
+			"name": "logging_level",
+			"param_name": "logging_level",
+			"type": "text",
+			"value_type": "string",
+			"default_value": "INFO"
+		},
+		{
+			"id": "l3iCIIcyEl49DYFD",
+			"name": "test",
+			"param_name": "test",
+			"type": "text",
+			"value_type": "integer",
+			"default_value": "0"
+		},
+		{
+			"id": "tFfIcY0AFwFhWVVi",
+			"name": "merge_processing",
+			"param_name": "merge_processing",
+			"type": "text",
+			"value_type": "integer",
+			"default_value": "1"
+		}
+	]
+}
