@@ -28,12 +28,11 @@ class Settings(pydantic_settings.BaseSettings):
     session_id: str
     regenerate: bool = False # copies from cache if exists
     zarr: bool = False
-    logging_level: str = 'INFO'
     test: bool = False # small metadata-only version of NWB for testing
     merge_processing: bool = True  # merge data_processes from input asset processing.json files
     merge_legacy: bool = True  # coerce old/invalid-schema processing.json files into current schema (ignored if merge_processing=False)
-
-
+    logging_level: str = "INFO"
+    
 def _copy(src: pathlib.Path | upath.UPath | str, dest_dir: pathlib.Path | upath.UPath | str) -> None:
     src = upath.UPath(src)
     dest = upath.UPath(dest_dir) / src.name
@@ -124,7 +123,8 @@ def main(settings: Settings) -> None:
     session = npc_sessions.Session(settings.session_id)
     
     # _______________________ write NWB _____________________
-    start_date_time = datetime.datetime.now(tz=datetime.timezone.utc)
+    logger.info(f"Writing NWB file")
+    start_date_time = npc_sessions.get_aware_dt(datetime.datetime.now())
     nwb_path = RESULTS_DIR / f"{settings.session_id}.nwb"
     if settings.regenerate or not (existing := npc_lims.get_nwb_path(settings.session_id, version=npc_sessions.__version__, zarr=settings.zarr)).exists():
         logger.info("Generating new NWB")
@@ -138,18 +138,41 @@ def main(settings: Settings) -> None:
     else:
         logger.info("Reusing existing NWB")
         _copy(existing, nwb_path)
-    end_date_time = datetime.datetime.now(tz=datetime.timezone.utc)
+    end_date_time = npc_sessions.get_aware_dt(datetime.datetime.now())
 
     # __________________ write NWB contents __________________
+    logger.info(f"Writing contents of NWB file internal paths")
     internal_paths = lazynwb.get_internal_paths(nwb_path, include_arrays=False)
     (RESULTS_DIR / "nwb_contents.json").write_text(json.dumps(list(internal_paths.keys()), indent=2))
 
-    # __________________ write AIND metadata __________________
-    npc_sessions.aind_data_schema.get_instrument_model(session).write_standard_file(RESULTS_DIR)
-    npc_sessions.aind_data_schema.get_data_description_model(session).write_standard_file(RESULTS_DIR)
-    npc_sessions.aind_data_schema.get_acquisition_model(session).write_standard_file(RESULTS_DIR)
+    # __________ copy metadata files from raw asset _________
+    raw_data_dir = [p for p in DATA_DIR.iterdir() if p.is_dir() and p.name == aind_session.Session(p).id][0]
+    logger.info(f"Identified raw data asset dir: {raw_data_dir.as_posix()}")
+    for name in ("subject", "procedures", ):
+        src = raw_data_dir / f"{name}.json"
+        if src.exists():
+            logger.info(f"Copying {name}.json")
+            _copy(src, RESULTS_DIR)
 
+    # __________________ write AIND metadata __________________
+    logger.info(f"Writing instrument.json")
+    npc_sessions.aind_data_schema.get_instrument_model(session).write_standard_file(RESULTS_DIR)
+    logger.info(f"Writing acquisition.json")
+    npc_sessions.aind_data_schema.get_acquisition_model(session).write_standard_file(RESULTS_DIR)
+    logger.info(f"Writing data_description.json")
+    (
+        npc_sessions.aind_data_schema.get_data_description_model(session)
+        .model_copy(
+            update=dict(
+                name=f"{raw_data_dir.name}_nwb_{end_date_time.strftime('%Y-%m-%d_%H-%M-%S')}",
+                creation_time=end_date_time,
+                data_level="derived",
+            )
+        )
+        .write_standard_file(RESULTS_DIR)
+    )
     # ______________ write processing metadata  ______________
+    logger.info(f"Writing processing.json")
     _write_processing(
         processing=_get_processing_model(start_date_time, end_date_time),
         dest_dir=RESULTS_DIR,
@@ -157,14 +180,8 @@ def main(settings: Settings) -> None:
         merge_legacy=settings.merge_legacy,
     )
 
-    # ________ copy other metadata files from raw asset _______
-    raw_data_dir = [p for p in DATA_DIR.iterdir() if p.is_dir() and p.name == aind_session.Session(p).id][0]
-    for name in ("subject", "procedures", ):
-        src = raw_data_dir / f"{name}.json"
-        if src.exists():
-            _copy(src, RESULTS_DIR)
     
 if __name__ == "__main__":
     settings = Settings()
-    logging.basicConfig(level=settings.logging_level)
+    logging.basicConfig(level=settings.logging_level, force=True)
     main(settings)
