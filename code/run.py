@@ -34,7 +34,7 @@ class Settings(pydantic_settings.BaseSettings):
     merge_legacy: bool = True  # coerce old/invalid-schema processing.json files into current schema (ignored if merge_processing=False)
 
 
-def _copy(src: upath.UPath | str, dest_dir: str | upath.UPath) -> None:
+def _copy(src: pathlib.Path | upath.UPath | str, dest_dir: pathlib.Path | upath.UPath | str) -> None:
     src = upath.UPath(src)
     dest = upath.UPath(dest_dir) / src.name
     logger.info(f"Copying {src.as_posix()} to {dest.parent.as_posix()}")
@@ -122,7 +122,7 @@ def main(settings: Settings) -> None:
     logger.info(f"Running with settings: {settings}")
 
     session = npc_sessions.Session(settings.session_id)
-
+    
     # _______________________ write NWB _____________________
     start_date_time = datetime.datetime.now(tz=datetime.timezone.utc)
     nwb_path = RESULTS_DIR / f"{settings.session_id}.nwb"
@@ -157,7 +157,13 @@ def main(settings: Settings) -> None:
         merge_legacy=settings.merge_legacy,
     )
 
-
+    # ________ copy other metadata files from raw asset _______
+    raw_data_dir = [p for p in DATA_DIR.iterdir() if p.is_dir() and p.name == aind_session.Session(p).id][0]
+    for name in ("subject", "procedures", ):
+        src = raw_data_dir / f"{name}.json"
+        if src.exists():
+            _copy(src, RESULTS_DIR)
+    
 if __name__ == "__main__":
     settings = Settings()
     logging.basicConfig(level=settings.logging_level)
