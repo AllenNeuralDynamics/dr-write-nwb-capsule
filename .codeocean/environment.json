@@ -20,12 +20,16 @@
 		"pip3": {
 			"packages": [
 				{
+					"name": "aind-metadata-upgrader",
+					"version": "0.6.3"
+				},
+				{
 					"name": "lazynwb",
 					"version": "0.2.88"
 				},
 				{
 					"name": "npc-sessions[metadata]",
-					"version": "0.0.278"
+					"version": "0.0.279"
 				}
 			],
 			"options": {},

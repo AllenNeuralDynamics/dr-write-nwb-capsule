@@ -2,7 +2,6 @@ import datetime
 import json
 import logging
 import pathlib
-import re
 
 import aind_session
 import lazynwb
@@ -14,6 +13,7 @@ import upath
 from aind_data_schema.components.identifiers import Code
 from aind_data_schema.core.processing import DataProcess, Processing, ProcessStage
 from aind_data_schema_models.process_names import ProcessName
+from aind_metadata_upgrader.processing.v1v2 import ProcessingV1V2
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,6 @@ RESULTS_DIR = pathlib.Path("/root/capsule/results")
 class Settings(pydantic_settings.BaseSettings):
     model_config = pydantic_settings.SettingsConfigDict(
         cli_parse_args=True,
-        cli_implicit_flags=True,
     )
 
     session_id: str
@@ -33,6 +32,7 @@ class Settings(pydantic_settings.BaseSettings):
     test: bool = False # small metadata-only version of NWB for testing
     merge_processing: bool = True  # merge data_processes from input asset processing.json files
     merge_legacy: bool = True  # coerce old/invalid-schema processing.json files into current schema (ignored if merge_processing=False)
+
 
 def _copy(src: upath.UPath | str, dest_dir: str | upath.UPath) -> None:
     src = upath.UPath(src)
@@ -69,38 +69,6 @@ def _get_processing_model(
     return Processing(data_processes=[data_process])
 
 
-def _parse_datetime_from_dirname(name: str) -> datetime.datetime:
-    """Extract the last YYYY-MM-DD_HH-MM-SS timestamp from an asset directory name."""
-    matches = re.findall(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}", name)
-    if matches:
-        return datetime.datetime.strptime(matches[-1], "%Y-%m-%d_%H-%M-%S").replace(
-            tzinfo=datetime.timezone.utc
-        )
-    return datetime.datetime.now(tz=datetime.timezone.utc)
-
-
-def _coerce_legacy_data_process(dp: dict, experimenter: str | None) -> DataProcess:
-    """Map an old-schema DataProcess dict to the current DataProcess model.
-
-    Old required fields that have no new equivalent (input_location, output_location)
-    are dropped. Missing required new fields are filled with defaults.
-    """
-    return DataProcess(
-        process_type=dp["name"],  # ProcessName accepts string values directly
-        stage=ProcessStage.PROCESSING,
-        code=Code(
-            url=dp.get("code_url") or "unknown",
-            version=dp.get("software_version") or dp.get("code_version"),
-            parameters=dp.get("parameters") or None,
-        ),
-        experimenters=[experimenter] if experimenter else ["unknown"],
-        start_date_time=dp["start_date_time"],
-        end_date_time=dp.get("end_date_time"),
-        output_parameters=dp.get("outputs") or None,
-        notes=dp.get("notes"),
-    )
-
-
 def _write_processing(
     processing: Processing,
     dest_dir: pathlib.Path,
@@ -110,8 +78,8 @@ def _write_processing(
     """Write processing.json, merging data_processes from any input asset processing.json files.
 
     Valid Processing models (matching schema version) are merged via __add__.
-    Invalid or mismatched-version models are coerced to the current schema and merged
-    via __add__ if merge_legacy=True; individual items that fail coercion are skipped.
+    Invalid or mismatched-version models are upgraded via ProcessingV1V2 and merged
+    via __add__ if merge_legacy=True; assets that fail upgrading are skipped.
     If merge_processing=False, writes only this capsule's DataProcess.
     """
     if not merge_processing:
@@ -125,52 +93,27 @@ def _write_processing(
         text = path.read_text()
         try:
             prior = Processing.model_validate_json(text)
+        except Exception:
+            pass
+        else:
             processing = prior + processing
             logger.info(f"Merged valid Processing model from {asset_dir.name}")
             continue
-        except Exception:
-            pass
         if not merge_legacy:
             continue
         raw = json.loads(text)
-        experimenter = raw.get("processing_pipeline", {}).get("processor_full_name")
-        dps = (raw.get("data_processes")
-               or raw.get("processing_pipeline", {}).get("data_processes")
-               or [])
-        if not isinstance(dps, list):
-            # data_processes is a bare dict (e.g. just {"parameters": {...}}):
-            # synthesise a single DataProcess from whatever is available
-            dt = _parse_datetime_from_dirname(asset_dir.name)
-            try:
-                coerced = [DataProcess(
-                    process_type=ProcessName.OTHER,
-                    stage=ProcessStage.PROCESSING,
-                    code=Code(
-                        url="unknown",
-                        parameters=dps.get("parameters") or None,
-                    ),
-                    experimenters=[experimenter] if experimenter else ["unknown"],
-                    start_date_time=dt,
-                    notes=asset_dir.name,
-                )]
-                prior = Processing(data_processes=coerced)
-                processing = prior + processing
-                logger.info(f"Synthesised DataProcess from bare parameters dict in {asset_dir.name}")
-            except Exception as e:
-                logger.warning(f"Could not synthesise DataProcess from {asset_dir.name}: {e}")
+        try:
+            v2_data = ProcessingV1V2().upgrade(raw, Processing.model_fields["schema_version"].default)
+        except Exception as e:
+            logger.warning(f"Could not upgrade Processing from {asset_dir.name}: {e}")
             continue
-        coerced: list[DataProcess] = []
-        for dp in dps:
-            items = dp if isinstance(dp, list) else [dp]
-            for item in items:
-                try:
-                    coerced.append(_coerce_legacy_data_process(item, experimenter))
-                except Exception as e:
-                    logger.warning(f"Could not coerce DataProcess from {asset_dir.name}: {e}")
-        if coerced:
-            prior = Processing(data_processes=coerced)
-            processing = prior + processing
-            logger.info(f"Coerced and merged {len(coerced)} legacy data_processes from {asset_dir.name}")
+        try:
+            prior = Processing(**v2_data)
+        except Exception as e:
+            logger.warning(f"Could not validate upgraded Processing from {asset_dir.name}: {e}")
+            continue
+        processing = prior + processing
+        logger.info(f"Upgraded and merged legacy Processing from {asset_dir.name}")
 
     processing.write_standard_file(dest_dir)
 
